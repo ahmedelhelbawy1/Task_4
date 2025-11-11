@@ -1,3 +1,9 @@
+// ✅ Required in ES module projects so the `jest` global is available
+import { jest } from '@jest/globals';
+
+// Increase Jest timeout because DB operations can take a while
+jest.setTimeout(120000);
+
 import http from 'http';
 import mongoose from 'mongoose';
 import crypto from 'crypto';
@@ -27,9 +33,9 @@ describe('Authentication controller integration', () => {
   let baseUrl;
   let issuedToken;
 
+  // 🔹 Setup: connect to DB and start test HTTP server
   beforeAll(async () => {
     await connectDB();
-    // Guarantee a clean slate for the email we are about to register.
     await User.deleteOne({ email: credentials.email.toLowerCase() });
 
     serverInstance = await startHttpServer();
@@ -37,54 +43,70 @@ describe('Authentication controller integration', () => {
     baseUrl = `http://127.0.0.1:${port}/api`;
   });
 
+  // 🔹 Cleanup: close DB and server connections safely
   afterAll(async () => {
-    // Remove the test artefacts so the live database stays tidy for future runs.
-    await User.deleteOne({ email: credentials.email.toLowerCase() });
+    try {
+      await User.deleteOne({ email: credentials.email.toLowerCase() });
 
-    await new Promise((resolve) => serverInstance.close(resolve));
-    await mongoose.connection.close();
+      if (serverInstance && serverInstance.close) {
+        await new Promise((resolve) => serverInstance.close(resolve));
+      }
+
+      if (mongoose.connection.readyState !== 0) {
+        await mongoose.connection.close();
+      }
+    } catch (err) {
+      console.error('Cleanup failed:', err);
+    }
   });
 
+  // 🔹 Test 1: Register a new user
   test('registers a brand-new user and returns a JWT for immediate use', async () => {
     const response = await fetch(`${baseUrl}/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(credentials)
+      body: JSON.stringify(credentials),
     });
 
     const payload = await response.json();
 
-    // Successful registration should return 201 alongside a token and the
-    // public portion of the newly saved user record.
     expect(response.status).toBe(201);
     expect(payload.token).toBeTruthy();
     expect(payload.user.email).toBe(credentials.email.toLowerCase());
     expect(payload.user).not.toHaveProperty('passwordHash');
 
-    issuedToken = payload.token;
+    issuedToken = payload.token; // store for later use
   });
 
-  /*
-  TODO: test login behaviour
-  - attempt login request with user credentials
-  - expect a 200 response
-  - expect a JWT token in the response
-  - expect the returned user profile to match the registered user
-  - store the issued token for use in subsequent tests
-  */
+  // 🔹 Test 2: Login existing user and receive a fresh JWT
   test('authenticates the same user and issues a fresh JWT', async () => {
-    // This test will always fail until the TODO above is implemented.
-    expect(true).toBe(false);
-  });
-
-  test('returns the public profile for the currently authenticated user', async () => {
-    const response = await fetch(`${baseUrl}/auth/me`, {
-      headers: { Authorization: `Bearer ${issuedToken}` }
+    const response = await fetch(`${baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: credentials.email,
+        password: credentials.password,
+      }),
     });
 
     const payload = await response.json();
 
-    // A valid token must yield the sanitized user profile.
+    expect(response.status).toBe(200);
+    expect(payload.token).toBeTruthy();
+    expect(payload.user.email).toBe(credentials.email.toLowerCase());
+    expect(payload.user).not.toHaveProperty('passwordHash');
+
+    issuedToken = payload.token; // fresh token for next test
+  });
+
+  // 🔹 Test 3: Access profile with the JWT
+  test('returns the public profile for the currently authenticated user', async () => {
+    const response = await fetch(`${baseUrl}/auth/me`, {
+      headers: { Authorization: `Bearer ${issuedToken}` },
+    });
+
+    const payload = await response.json();
+
     expect(response.status).toBe(200);
     expect(payload.user.email).toBe(credentials.email.toLowerCase());
     expect(payload.user).not.toHaveProperty('passwordHash');
